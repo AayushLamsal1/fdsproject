@@ -4,6 +4,5 @@ venv/
 *.swp
 *.db
 tables.py
-connect.py
-massadd.py
+
 ./templates/tables.html

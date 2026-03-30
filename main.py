@@ -1,4 +1,5 @@
 import sqlite3
+from math import exp
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -24,7 +25,7 @@ def create_daily_productivity_table(conn):
 			focus_score INTEGER NOT NULL,
 			sleep_hours REAL NOT NULL,
 			phone_usage_hours REAL NOT NULL,
-			score INTEGER NOT NULL,
+			score REAL NOT NULL,
 			UNIQUE(user_id, activity_date),
 			FOREIGN KEY (user_id) REFERENCES users(id)
 		)
@@ -67,6 +68,7 @@ def init_db():
 			create_daily_productivity_table(conn)
 		else:
 			daily_columns = {row[1] for row in daily_column_rows}
+			daily_column_types = {row[1]: (row[2] or "").upper() for row in daily_column_rows}
 			expected_columns = {
 				"id",
 				"user_id",
@@ -78,8 +80,9 @@ def init_db():
 				"score",
 			}
 			legacy_columns = {"hours_worked", "tasks_completed", "focus_level", "notes"}
+			score_type_is_real = daily_column_types.get("score") == "REAL"
 
-			if daily_columns != expected_columns or (daily_columns & legacy_columns):
+			if daily_columns != expected_columns or (daily_columns & legacy_columns) or not score_type_is_real:
 				conn.execute("ALTER TABLE daily_productivity RENAME TO daily_productivity_old")
 				create_daily_productivity_table(conn)
 
@@ -289,25 +292,22 @@ def today_data():
 			error="Study/sleep/phone hours must be non-negative, and focus score must be 0-100.",
 		)
 
-	study_weight = 0.34
-	focus_weight = 0.31
-	sleep_weight = 0.22
-	phone_weight = 0.13
+	study_weight = 11.812612
+	focus_weight = 6.597617
+	sleep_weight = 5.476603
+	phone_weight = -5.393503
+	intercept = 50.146637
 
-	study_component = min(study_hours / 10, 1) * 100
-	focus_component = focus_score
-	sleep_component = max(0, 100 - abs(sleep_hours - 8) * 15)
-	phone_component = max(0, 100 - min(phone_usage_hours / 10, 1) * 100)
-
-	score = int(
-		round(
-			study_weight * study_component
-			+ focus_weight * focus_component
-			+ sleep_weight * sleep_component
-			+ phone_weight * phone_component
-		)
+	raw_score = (
+		intercept
+		+ study_weight * study_hours
+		+ focus_weight * focus_score
+		+ sleep_weight * sleep_hours
+		+ phone_weight * phone_usage_hours
 	)
 
+	# Compress raw model output so 100 remains an extreme value rather than a common clamp.
+	score = 100 / (1 + exp(-(raw_score - 550) / 100))
 	score = max(0, min(100, score))
 
 	with sqlite3.connect(DATABASE_PATH) as conn:
@@ -347,7 +347,10 @@ def today_data():
 @app.get("/dashboard")
 @login_required
 def dashboard():
-	score = request.args.get("score", type=int)
+	score = request.args.get("score", type=float)
+	top_percent = None
+	today_total_users = 0
+	today_date = datetime.now().date().isoformat()
 
 	if score is None:
 		with sqlite3.connect(DATABASE_PATH) as conn:
@@ -361,9 +364,54 @@ def dashboard():
 				""",
 				(session["user_id"],),
 			).fetchone()
-		score = latest_entry[0] if latest_entry else 78
+		score = latest_entry[0] if latest_entry else 78.0
 
-	return render_template("dashboard.html", active_page="dashboard", score=score)
+	with sqlite3.connect(DATABASE_PATH) as conn:
+		today_row = conn.execute(
+			"""
+			SELECT score
+			FROM daily_productivity
+			WHERE user_id = ? AND activity_date = ?
+			LIMIT 1
+			""",
+			(session["user_id"], today_date),
+		).fetchone()
+
+		if today_row:
+			today_score = today_row[0]
+			today_total_users = conn.execute(
+				"""
+				SELECT COUNT(*)
+				FROM daily_productivity
+				WHERE activity_date = ?
+				""",
+				(today_date,),
+			).fetchone()[0]
+
+			higher_scores_count = conn.execute(
+				"""
+				SELECT COUNT(*)
+				FROM daily_productivity
+				WHERE activity_date = ? AND score > ?
+				""",
+				(today_date, today_score),
+			).fetchone()[0]
+
+			rank = higher_scores_count + 1
+			if today_total_users <= 1:
+				top_percent = 1.0
+			else:
+				top_percent = round((rank / today_total_users) * 100, 1)
+
+	display_score = round(score, 1)
+
+	return render_template(
+		"dashboard.html",
+		active_page="dashboard",
+		score=display_score,
+		top_percent=top_percent,
+		today_total_users=today_total_users,
+	)
 
 
 @app.get("/logout")

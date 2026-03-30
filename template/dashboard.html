@@ -8,7 +8,11 @@
         <p class="score-label">Your Productivity Score</p>
         <h1>{{ score }}</h1>
     </div>
-    <p class="subtext">Keep logging data from Today's Data to improve consistency.</p>
+    {% if top_percent is not none %}
+    <p class="subtext">You are in the top {{ top_percent }}% productive users today ({{ today_total_users }} users logged data).</p>
+    {% else %}
+    <p class="subtext">Log your today's data to see your percentile rank.</p>
+    {% endif %}
 </section>
 
 <section class="graphs-section">

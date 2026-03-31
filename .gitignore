@@ -3,6 +3,5 @@ venv/
 *.env
 *.swp
 *.db
-tables.py
 
 ./templates/tables.html
